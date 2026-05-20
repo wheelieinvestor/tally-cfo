@@ -39,6 +39,14 @@ def _load_env_values() -> dict[str, str]:
     return {key: value for key, value in values.items() if value}
 
 
+def get_mercury_api_token() -> str:
+    values = _load_env_values()
+    token = values.get("MERCURY_API_TOKEN")
+    if not token:
+        raise RuntimeError("Missing required config key: MERCURY_API_TOKEN")
+    return token
+
+
 @lru_cache
 def get_config() -> Config:
     values = _load_env_values()

@@ -16,6 +16,21 @@ fi
 source .venv/bin/activate
 
 uv pip install -e .
+python - <<'PY'
+from pathlib import Path
+import site
+
+project_root = Path.cwd()
+for site_dir in site.getsitepackages():
+    Path(site_dir, "tally_cfo_dev.pth").write_text(f"{project_root}\n")
+
+launcher = project_root / ".venv" / "bin" / "tally"
+text = launcher.read_text()
+insert = f"import sys\nsys.path.insert(0, {str(project_root)!r})\n"
+if insert not in text:
+    text = text.replace("import sys\n", insert, 1)
+    launcher.write_text(text)
+PY
 uv run playwright install chromium
 rm -f uv.lock
 tally setup

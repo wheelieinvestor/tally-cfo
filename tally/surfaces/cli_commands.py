@@ -1,9 +1,19 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 from shutil import copyfile
 
 import click
 
 from tally.config import home_dir, repo_root
-from tally.db import init_db
+from tally.db import (
+    connect,
+    get_accounts_by_provider,
+    get_recent_transactions,
+    init_db,
+    run_migrations,
+)
+from tally.ingest.orchestrator import sync_all
+from tally.logging_setup import setup_logging
 
 
 def _not_implemented(command_name: str) -> None:
@@ -12,6 +22,7 @@ def _not_implemented(command_name: str) -> None:
 
 @click.command()
 def setup() -> None:
+    setup_logging()
     tally_dir = home_dir()
     logs_dir = tally_dir / "logs"
     env_file = tally_dir / ".env"
@@ -42,12 +53,54 @@ def setup() -> None:
 
 @click.command()
 def sync() -> None:
-    _not_implemented("sync")
+    setup_logging()
+    init_db()
+    results = sync_all(["mercury"])
+    has_errors = False
+    for provider, result in results.items():
+        click.echo(
+            f"{provider}: {result.accounts_synced} accounts synced, "
+            f"{result.transactions_inserted} new transactions, "
+            f"{result.duration_seconds:.1f}s"
+        )
+        for error in result.errors:
+            has_errors = True
+            click.echo(f"{provider} error: {error}")
+    raise click.exceptions.Exit(1 if has_errors else 0)
 
 
 @click.command()
 def status() -> None:
-    _not_implemented("status")
+    setup_logging()
+    db_path = init_db()
+    with connect(db_path) as conn:
+        run_migrations(conn)
+        accounts = get_accounts_by_provider(conn, "mercury")
+        if not accounts:
+            click.echo("No data yet. Run `tally sync`.")
+            return
+        transactions = get_recent_transactions(conn, 10)
+
+    click.echo(f"Accounts ({len(accounts)})")
+    for account in accounts:
+        name = str(account["account_name"])
+        # Mercury transaction responses do not include running balance, so this slice displays
+        # the transaction-derived account total from the local ledger.
+        balance = _money(Decimal(str(account.get("derived_balance") or "0")))
+        synced = _relative_time(str(account.get("last_synced_at") or ""))
+        dots = "." * max(2, 32 - len(name))
+        click.echo(f"  {name} {dots} {balance:<12} (synced {synced})")
+
+    click.echo("")
+    click.echo("Recent transactions")
+    for transaction in transactions:
+        posted_at = _display_date(str(transaction["posted_at"]))
+        name = transaction.get("counterparty") or transaction.get("description") or "Unknown"
+        amount = Decimal(str(transaction["amount"]))
+        amount_text = _signed_money(amount)
+        category = transaction.get("category") or ""
+        styled_amount = click.style(amount_text, fg="green" if amount >= 0 else "red")
+        click.echo(f"  {posted_at}  {str(name)[:18]:<18} {styled_amount:>12}   {category}")
 
 
 @click.command()
@@ -78,3 +131,36 @@ def facts() -> None:
 @click.argument("thing")
 def why(thing: str) -> None:
     _not_implemented("why")
+
+
+def _money(value: Decimal) -> str:
+    return f"${value:,.2f}"
+
+
+def _signed_money(value: Decimal) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _display_date(value: str) -> str:
+    return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d")
+
+
+def _relative_time(value: str) -> str:
+    if not value:
+        return "never"
+    try:
+        then = datetime.fromisoformat(value).astimezone(timezone.utc)
+    except ValueError:
+        return "unknown"
+    delta = datetime.now(timezone.utc) - then
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
