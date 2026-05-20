@@ -1,0 +1,11 @@
+.env
+~/.tally/
+*.db
+*.log
+dist/
+build/
+.venv/
+__pycache__/
+.playwright/
+tmp/*.png
+.DS_Store
