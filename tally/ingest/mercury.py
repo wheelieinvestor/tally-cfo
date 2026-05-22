@@ -1,7 +1,6 @@
 import json
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -18,21 +17,13 @@ from tally.db import (
     upsert_account,
     upsert_transaction,
 )
+from tally.ingest.types import SyncResult
 
 logger = structlog.get_logger()
 
 
 DEFAULT_BASE_URL = "https://api.mercury.com/api/v1"
 USER_AGENT = f"tally-cfo/{__version__} (+https://github.com/wheelieinvestor/tally-cfo)"
-
-
-@dataclass
-class SyncResult:
-    accounts_synced: int = 0
-    transactions_inserted: int = 0
-    transactions_skipped: int = 0
-    duration_seconds: float = 0.0
-    errors: list[str] = field(default_factory=list)
 
 
 class MercuryAPIError(RuntimeError):
@@ -107,6 +98,7 @@ class MercuryClient:
                     )
                     account_type = account.get("kind") or account.get("type") or "unknown"
                     currency = account.get("currency") or "USD"
+                    balance = _account_balance(account)
                     account_id = upsert_account(
                         conn,
                         provider="mercury",
@@ -114,6 +106,7 @@ class MercuryClient:
                         account_name=str(account_name),
                         currency=str(currency),
                         external_id=external_id,
+                        balance=balance,
                     )
                     result.accounts_synced += 1
 
@@ -165,6 +158,7 @@ class MercuryClient:
         except MercuryAPIError as error:
             result.errors.append(str(error))
         finally:
+            self._client.close()
             result.duration_seconds = time.monotonic() - started
 
         return result
@@ -277,3 +271,18 @@ def _category(transaction: dict) -> str | None:
             if value:
                 return str(value)
     return None
+
+
+def _account_balance(account: dict) -> Decimal | None:
+    current = account.get("currentBalance")
+    available = account.get("availableBalance")
+    if current is not None and available is not None and str(current) != str(available):
+        logger.info(
+            "Mercury current and available balances differ",
+            account_id=account.get("id"),
+        )
+    if current is None:
+        current = available
+    if current is None:
+        return None
+    return Decimal(str(current))

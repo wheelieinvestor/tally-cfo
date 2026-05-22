@@ -7,7 +7,8 @@ import click
 from tally.config import home_dir, repo_root
 from tally.db import (
     connect,
-    get_accounts_by_provider,
+    get_all_accounts,
+    get_latest_positions,
     get_recent_transactions,
     init_db,
     run_migrations,
@@ -55,14 +56,22 @@ def setup() -> None:
 def sync() -> None:
     setup_logging()
     init_db()
-    results = sync_all(["mercury"])
+    results = sync_all()
     has_errors = False
     for provider, result in results.items():
-        click.echo(
-            f"{provider}: {result.accounts_synced} accounts synced, "
-            f"{result.transactions_inserted} new transactions, "
-            f"{result.duration_seconds:.1f}s"
-        )
+        if provider == "public":
+            click.echo(
+                f"{provider}: {result.accounts_synced} {_plural('account', result.accounts_synced)} "
+                f"synced, {result.positions_synced} positions, "
+                f"{result.trades_inserted} new {_plural('trade', result.trades_inserted)}, "
+                f"{result.duration_seconds:.1f}s"
+            )
+        else:
+            click.echo(
+                f"{provider}: {result.accounts_synced} {_plural('account', result.accounts_synced)} "
+                f"synced, {result.transactions_inserted} new transactions, "
+                f"{result.duration_seconds:.1f}s"
+            )
         for error in result.errors:
             has_errors = True
             click.echo(f"{provider} error: {error}")
@@ -75,18 +84,17 @@ def status() -> None:
     db_path = init_db()
     with connect(db_path) as conn:
         run_migrations(conn)
-        accounts = get_accounts_by_provider(conn, "mercury")
+        accounts = get_all_accounts(conn)
         if not accounts:
             click.echo("No data yet. Run `tally sync`.")
             return
         transactions = get_recent_transactions(conn, 10)
+        positions = get_latest_positions(conn)
 
     click.echo(f"Accounts ({len(accounts)})")
     for account in accounts:
         name = str(account["account_name"])
-        # Mercury transaction responses do not include running balance, so this slice displays
-        # the transaction-derived account total from the local ledger.
-        balance = _money(Decimal(str(account.get("derived_balance") or "0")))
+        balance = _money_or_dash(account.get("balance"))
         synced = _relative_time(str(account.get("last_synced_at") or ""))
         dots = "." * max(2, 32 - len(name))
         click.echo(f"  {name} {dots} {balance:<12} (synced {synced})")
@@ -98,9 +106,20 @@ def status() -> None:
         name = transaction.get("counterparty") or transaction.get("description") or "Unknown"
         amount = Decimal(str(transaction["amount"]))
         amount_text = _signed_money(amount)
-        category = transaction.get("category") or ""
-        styled_amount = click.style(amount_text, fg="green" if amount >= 0 else "red")
-        click.echo(f"  {posted_at}  {str(name)[:18]:<18} {styled_amount:>12}   {category}")
+        category = _single_line(transaction.get("category") or "--")[:16]
+        amount_cell = f"{amount_text:>10}"
+        styled_amount = click.style(amount_cell, fg="green" if amount >= 0 else "red")
+        click.echo(f"{posted_at}  {_fixed_text(str(name), 34)}  " f"{styled_amount}     {category}")
+
+    if positions:
+        visible = positions[:20]
+        click.echo("")
+        click.echo(f"Positions ({len(positions)})")
+        for position in visible:
+            click.echo(f"  {_position_line(position)}")
+        remaining = len(positions) - len(visible)
+        if remaining > 0:
+            click.echo(f"  + {remaining} more")
 
 
 @click.command()
@@ -134,7 +153,14 @@ def why(thing: str) -> None:
 
 
 def _money(value: Decimal) -> str:
-    return f"${value:,.2f}"
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _money_or_dash(value: object) -> str:
+    if value is None or value == "":
+        return "--"
+    return _money(Decimal(str(value)))
 
 
 def _signed_money(value: Decimal) -> str:
@@ -164,3 +190,52 @@ def _relative_time(value: str) -> str:
     if hours < 24:
         return f"{hours}h ago"
     return f"{hours // 24}d ago"
+
+
+def _plural(word: str, count: int) -> str:
+    return word if count == 1 else f"{word}s"
+
+
+def _single_line(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def _fixed_text(value: str, width: int) -> str:
+    text = _single_line(value)
+    if len(text) > width:
+        text = f"{text[: width - 1]}…"
+    return f"{text:<{width}}"
+
+
+def _quantity_text(value: Decimal) -> str:
+    if value == value.to_integral_value():
+        text = f"{value:.0f}"
+    else:
+        text = f"{value.normalize():f}".rstrip("0").rstrip(".")
+    noun = "share" if value == Decimal("1") else "shares"
+    return f"{text} {noun}"
+
+
+def _position_line(position: dict) -> str:
+    symbol = str(position["symbol"])
+    quantity = Decimal(str(position["quantity"]))
+    current_value = Decimal(str(position["current_value"] or "0"))
+    cost_basis_raw = position.get("cost_basis")
+    avg_text = "--"
+    change_text = ""
+    if cost_basis_raw not in (None, "") and quantity != 0:
+        cost_basis = Decimal(str(cost_basis_raw))
+        avg_text = _money(cost_basis / quantity)
+        change = current_value - cost_basis
+        percent = Decimal("0") if cost_basis == 0 else (change / cost_basis) * Decimal("100")
+        sign = "+" if change >= 0 else ""
+        percent_text = f"{sign}{percent:.1f}%"
+        money_text = f"{sign}{_money(change)}" if change >= 0 else _money(change)
+        color = "green" if change > 0 else "red" if change < 0 else None
+        change_text = "   " + click.style(f"({percent_text} / {money_text})", fg=color)
+    left = f"{symbol} {_dots(symbol)} {_quantity_text(quantity)} @ avg {avg_text}"
+    return f"{left} = {_money(current_value):<12}{change_text}"
+
+
+def _dots(symbol: str) -> str:
+    return "." * max(2, 18 - len(symbol))

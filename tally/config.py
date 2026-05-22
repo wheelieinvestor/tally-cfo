@@ -47,6 +47,14 @@ def get_mercury_api_token() -> str:
     return token
 
 
+def get_public_api_token() -> str:
+    values = _load_env_values()
+    token = values.get("PUBLIC_API_TOKEN")
+    if not token:
+        raise RuntimeError("Missing required config key: PUBLIC_API_TOKEN")
+    return token
+
+
 @lru_cache
 def get_config() -> Config:
     values = _load_env_values()
