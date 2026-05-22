@@ -30,6 +30,7 @@ def setup_logging() -> None:
     )
 
     console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.ERROR)
     console_handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
             processor=structlog.dev.ConsoleRenderer(colors=False),

@@ -1,7 +1,6 @@
 import click
 
 from tally.logging_setup import setup_logging
-from tally.scheduler import run_scheduler
 from tally.surfaces import cli_commands
 
 setup_logging()
@@ -27,6 +26,8 @@ cli.add_command(cli_commands.ask)
 
 @cli.command()
 def scheduler() -> None:
+    from tally.scheduler import run_scheduler
+
     run_scheduler()
 
 

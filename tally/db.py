@@ -136,14 +136,12 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def _ensure_migration_table(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
+    connection.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
           name TEXT PRIMARY KEY,
           applied_at TIMESTAMP NOT NULL
         )
-        """
-    )
+        """)
 
 
 def _column_exists(connection: sqlite3.Connection, table: str, column: str) -> bool:
@@ -154,19 +152,25 @@ def _column_exists(connection: sqlite3.Connection, table: str, column: str) -> b
 def _migration_001_accounts_external_id(connection: sqlite3.Connection) -> None:
     if not _column_exists(connection, "accounts", "external_id"):
         connection.execute("ALTER TABLE accounts ADD COLUMN external_id TEXT")
-    connection.execute(
-        """
+    connection.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_provider_external_id
         ON accounts(provider, external_id)
-        """
-    )
+        """)
+
+
+def _migration_002_accounts_balance(connection: sqlite3.Connection) -> None:
+    if not _column_exists(connection, "accounts", "balance"):
+        connection.execute("ALTER TABLE accounts ADD COLUMN balance NUMERIC")
 
 
 Migration = tuple[str, Callable[[sqlite3.Connection], None]]
 
 
 def migrations() -> list[Migration]:
-    return [("001_accounts_external_id", _migration_001_accounts_external_id)]
+    return [
+        ("001_accounts_external_id", _migration_001_accounts_external_id),
+        ("002_accounts_balance", _migration_002_accounts_balance),
+    ]
 
 
 def run_migrations(connection: sqlite3.Connection) -> None:
@@ -200,17 +204,26 @@ def upsert_account(
     account_name: str,
     currency: str,
     external_id: str,
+    balance: Decimal | None,
 ) -> int:
     conn.execute(
         """
-        INSERT INTO accounts(provider, external_id, account_type, account_name, currency)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO accounts(provider, external_id, account_type, account_name, currency, balance)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(provider, external_id) DO UPDATE SET
           account_type = excluded.account_type,
           account_name = excluded.account_name,
-          currency = excluded.currency
+          currency = excluded.currency,
+          balance = excluded.balance
         """,
-        (provider, external_id, account_type, account_name, currency),
+        (
+            provider,
+            external_id,
+            account_type,
+            account_name,
+            currency,
+            str(balance) if balance is not None else None,
+        ),
     )
     row = conn.execute(
         "SELECT id FROM accounts WHERE provider = ? AND external_id = ?",
@@ -268,16 +281,114 @@ def update_account_synced_at(conn: sqlite3.Connection, account_id: int, when: da
     )
 
 
+def insert_position(
+    conn: sqlite3.Connection,
+    account_id: int,
+    symbol: str,
+    quantity: Decimal,
+    cost_basis: Decimal | None,
+    current_value: Decimal | None,
+    snapshot_at: datetime,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO positions(account_id, symbol, quantity, cost_basis, current_value, snapshot_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            symbol,
+            str(quantity),
+            str(cost_basis) if cost_basis is not None else None,
+            str(current_value) if current_value is not None else None,
+            snapshot_at.astimezone(timezone.utc).isoformat(),
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def upsert_trade(
+    conn: sqlite3.Connection,
+    account_id: int,
+    external_id: str,
+    symbol: str,
+    side: str,
+    quantity: Decimal,
+    price: Decimal,
+    executed_at: datetime,
+    raw_json: str,
+) -> tuple[int, bool]:
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO trades(
+          account_id, external_id, symbol, side, quantity, price, executed_at, raw_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            external_id,
+            symbol,
+            side,
+            str(quantity),
+            str(price),
+            executed_at.astimezone(timezone.utc).isoformat(),
+            raw_json,
+        ),
+    )
+    was_inserted = cursor.rowcount == 1
+    row = conn.execute(
+        "SELECT id FROM trades WHERE account_id = ? AND external_id = ?",
+        (account_id, external_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Trade upsert failed")
+    return int(row["id"]), was_inserted
+
+
+def get_latest_positions(conn: sqlite3.Connection, account_id: int | None = None) -> list[dict]:
+    params: tuple[int, ...] = () if account_id is None else (account_id,)
+    account_filter = "" if account_id is None else "AND positions.account_id = ?"
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM (
+          SELECT
+            positions.*,
+            accounts.account_name,
+            accounts.provider,
+            ROW_NUMBER() OVER (
+              PARTITION BY positions.account_id, positions.symbol
+              ORDER BY positions.snapshot_at DESC, positions.id DESC
+            ) AS row_number
+          FROM positions
+          JOIN accounts ON accounts.id = positions.account_id
+          WHERE accounts.provider = 'public'
+          {account_filter}
+        )
+        WHERE row_number = 1
+        ORDER BY CAST(current_value AS NUMERIC) DESC, symbol
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_all_accounts(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("""
+        SELECT *
+        FROM accounts
+        ORDER BY provider, account_name
+        """).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_accounts_by_provider(conn: sqlite3.Connection, provider: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT
-          accounts.*,
-          COALESCE(SUM(CAST(transactions.amount AS NUMERIC)), 0) AS derived_balance
+        SELECT accounts.*
         FROM accounts
-        LEFT JOIN transactions ON transactions.account_id = accounts.id
         WHERE accounts.provider = ?
-        GROUP BY accounts.id
         ORDER BY accounts.account_name
         """,
         (provider,),
