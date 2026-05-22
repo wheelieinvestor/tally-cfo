@@ -152,7 +152,6 @@ class PublicClient:
                                 snapshot_at=snapshot_at,
                             )
                         except (KeyError, ValueError, TypeError) as error:
-                            result.trades_skipped += 1
                             logger.warning(
                                 "Skipped Public position",
                                 account_id=external_id,
@@ -328,12 +327,20 @@ def _portfolio_balance(portfolio: dict) -> Decimal | None:
 
 def _position_symbol(position: dict) -> str:
     instrument = position.get("instrument") or {}
-    return _require_text(instrument, "symbol")
+    symbol = instrument.get("symbol") or position.get("symbol") or position.get("ticker")
+    if not symbol:
+        raise KeyError("missing symbol")
+    return str(symbol)
 
 
 def _position_cost_basis(position: dict) -> Decimal | None:
     cost_basis = position.get("costBasis") or {}
-    return _optional_decimal(cost_basis.get("totalCost"))
+    return _optional_decimal(
+        cost_basis.get("totalCost")
+        or position.get("costBasis")
+        or position.get("totalCost")
+        or position.get("totalCostBasis")
+    )
 
 
 def _decimal_field(data: dict, key: str) -> Decimal:
