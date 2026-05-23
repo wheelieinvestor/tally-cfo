@@ -1,20 +1,28 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from shutil import copyfile
+from uuid import uuid4
 
 import click
+import structlog
 
+from tally.agent.context import build_context_for_query
+from tally.agent.core import AgentContext, UserQueryTrigger, run_agent
 from tally.config import home_dir, repo_root
 from tally.db import (
     connect,
     get_all_accounts,
     get_latest_positions,
     get_recent_transactions,
+    get_recent_conversations,
     init_db,
+    insert_conversation_turn,
     run_migrations,
+    utc_now,
 )
-from tally.ingest.orchestrator import sync_all
 from tally.logging_setup import setup_logging
+
+LOGGER = structlog.get_logger(__name__)
 
 
 def _not_implemented(command_name: str) -> None:
@@ -54,6 +62,8 @@ def setup() -> None:
 
 @click.command()
 def sync() -> None:
+    from tally.ingest.orchestrator import sync_all
+
     setup_logging()
     init_db()
     results = sync_all()
@@ -136,9 +146,47 @@ def receipt(month: str | None, push: bool) -> None:
 
 
 @click.command()
+@click.option("--push", is_flag=True)
+@click.option("--dry-run", is_flag=True)
 @click.argument("question")
-def ask(question: str) -> None:
-    _not_implemented("ask")
+def ask(question: str, push: bool, dry_run: bool) -> None:
+    setup_logging()
+    db_path = init_db()
+    thread_id = uuid4().hex[:10]
+    with connect(db_path) as conn:
+        run_migrations(conn)
+        context_data = build_context_for_query(conn, question)
+        context = AgentContext(
+            data=context_data,
+            user_question=question,
+            recent_conversations=get_recent_conversations(conn, 6),
+        )
+        trigger = UserQueryTrigger(query=question)
+        try:
+            output = run_agent(trigger, context)
+        except Exception as error:
+            LOGGER.error("ask_failed", error=str(error))
+            click.echo(f"claude api error: {_short_error(error)}", err=True)
+            raise click.exceptions.Exit(1) from error
+
+        now = datetime.fromisoformat(utc_now())
+        insert_conversation_turn(conn, "cli", "user", question, thread_id, now)
+        insert_conversation_turn(conn, "cli", "agent", output.text, thread_id, now)
+        conn.commit()
+
+    click.echo(output.text)
+    if push and dry_run:
+        click.echo("[dry-run] would push to telegram")
+        return
+    if push:
+        from tally.surfaces.telegram_bot import send_to_user
+
+        try:
+            send_to_user(output.text)
+        except Exception as error:
+            LOGGER.error("telegram_push_from_ask_failed", error=str(error))
+            click.echo(f"telegram push error: {_short_error(error)}", err=True)
+            raise click.exceptions.Exit(1) from error
 
 
 @click.command()
@@ -239,3 +287,10 @@ def _position_line(position: dict) -> str:
 
 def _dots(symbol: str) -> str:
     return "." * max(2, 18 - len(symbol))
+
+
+def _short_error(error: Exception) -> str:
+    text = " ".join(str(error).split())
+    if not text:
+        return error.__class__.__name__
+    return text[:180]

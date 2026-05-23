@@ -411,3 +411,44 @@ def get_recent_transactions(conn: sqlite3.Connection, limit: int = 20) -> list[d
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def insert_conversation_turn(
+    conn: sqlite3.Connection,
+    surface: str,
+    role: str,
+    content: str,
+    thread_id: str,
+    created_at: datetime,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO conversations(surface, role, content, created_at, thread_id)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            surface,
+            role,
+            content,
+            created_at.astimezone(timezone.utc).isoformat(),
+            thread_id,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def get_recent_conversations(conn: sqlite3.Connection, limit: int = 6) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT role, content, created_at, thread_id
+        FROM (
+          SELECT role, content, created_at, thread_id, id
+          FROM conversations
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        )
+        ORDER BY created_at ASC, id ASC
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]

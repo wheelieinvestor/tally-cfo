@@ -1,9 +1,12 @@
 from typing import Any
 
-from tally.config import Config, get_config
+import structlog
+
+from tally.config import Config, get_config, get_telegram_credentials
 from tally.logging_setup import setup_logging
 
 setup_logging()
+LOGGER = structlog.get_logger(__name__)
 
 
 def _is_allowed(update: Any, config: Config) -> bool:
@@ -45,6 +48,20 @@ def run_bot() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
     application.run_polling()
+
+
+def send_to_user(text: str) -> None:
+    from telegram import Bot
+
+    token, user_id = get_telegram_credentials()
+    bot = Bot(token=token)
+    try:
+        import asyncio
+
+        asyncio.run(bot.send_message(chat_id=user_id, text=text))
+    except Exception as error:
+        LOGGER.error("telegram_push_failed", error=str(error))
+        raise
 
 
 if __name__ == "__main__":
