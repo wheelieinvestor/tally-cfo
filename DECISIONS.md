@@ -55,3 +55,25 @@ I considered deriving Public value from `buyingPower`, but that would ignore inv
 ### Why
 
 The slice needs the local database to reflect provider-reported balances and live brokerage snapshots exactly, while keeping sync idempotent for trades and preserving historical position snapshots for future slices.
+
+## 2026-05-22: Slice 3: Agent core, tally ask, and the voice decision
+
+### Context
+
+I need the first real agent path to answer one user question from real local Mercury and Public data, store the exchange, and optionally push the answer to Telegram.
+
+### Decision
+
+I am shipping Level 1 voice for this slice: dry and observational, not Level 3 full-spice. Starting dry beats starting performatively spicy; the voice can sharpen later after we see how it lands against real data.
+
+The agent uses `claude-sonnet-4-5` with non-streaming sync calls and a 1024 token cap because this path is one question, one grounded answer, then exit. The context builder is rule-based for slice 3: accounts are always included, transactions and brokerage data are included when keywords imply they are relevant, and the last 6 conversation turns are read from SQLite every time. Later slices can evolve this into a tool-call pattern if the rules get too wide.
+
+Conversation storage stays in the existing `conversations` table. Each `tally ask` call writes one user row and one agent row with `surface='cli'`; both rows share a short random `thread_id` so a single exchange can be inspected while still letting future context read the latest turns across threads.
+
+### Alternatives
+
+I considered pushing toward the sharper Phase 0 voice now, but that risks making early factual answers feel forced. I also considered dumping the whole database into the prompt, but that would hide context bugs and waste tokens.
+
+### Why
+
+The product needs answers that are useful before they are theatrical. A narrow agent path with explicit context and stored turns gives later slices a stable base.

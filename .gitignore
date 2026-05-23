@@ -9,3 +9,5 @@ __pycache__/
 .playwright/
 tmp/*.png
 .DS_Store
+
+.venv-*
