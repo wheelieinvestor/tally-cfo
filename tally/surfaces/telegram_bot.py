@@ -60,7 +60,7 @@ def send_to_user(text: str) -> None:
 
         asyncio.run(bot.send_message(chat_id=user_id, text=text))
     except Exception as error:
-        LOGGER.error("telegram_push_failed", error=str(error))
+        LOGGER.warning("telegram_push_failed", error=str(error))
         raise
 
 
