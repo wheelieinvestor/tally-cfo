@@ -62,7 +62,7 @@ def run_agent(trigger: Trigger, context: AgentContext) -> AgentOutput:
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as error:
-        LOGGER.error("anthropic_call_failed", trigger_kind="user_query", error=str(error))
+        LOGGER.warning("anthropic_call_failed", trigger_kind="user_query", error=str(error))
         raise
 
     text = _extract_text(response.content).strip()
