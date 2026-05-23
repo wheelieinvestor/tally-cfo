@@ -165,7 +165,7 @@ def ask(question: str, push: bool, dry_run: bool) -> None:
         try:
             output = run_agent(trigger, context)
         except Exception as error:
-            LOGGER.error("ask_failed", error=str(error))
+            LOGGER.warning("ask_failed", error=str(error))
             click.echo(f"claude api error: {_short_error(error)}", err=True)
             raise click.exceptions.Exit(1) from error
 
@@ -184,7 +184,7 @@ def ask(question: str, push: bool, dry_run: bool) -> None:
         try:
             send_to_user(output.text)
         except Exception as error:
-            LOGGER.error("telegram_push_from_ask_failed", error=str(error))
+            LOGGER.warning("telegram_push_from_ask_failed", error=str(error))
             click.echo(f"telegram push error: {_short_error(error)}", err=True)
             raise click.exceptions.Exit(1) from error
 
