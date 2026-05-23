@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import lru_cache
+import os
 from pathlib import Path
 
 
@@ -34,17 +35,21 @@ def env_path() -> Path | None:
 
 def _load_env_values() -> dict[str, str]:
     path = env_path()
-    if not path:
-        return {}
     values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and value:
+    if path:
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped.removeprefix("export ").strip()
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and value:
+                values[key] = value
+    for key, value in os.environ.items():
+        if value:
             values[key] = value
     return values
 
